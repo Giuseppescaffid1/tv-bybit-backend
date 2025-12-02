@@ -3,6 +3,7 @@ import time
 import hmac
 import hashlib
 import json
+import asyncio
 
 from fastapi import FastAPI, Request, HTTPException
 import httpx
@@ -20,7 +21,6 @@ def bybit_sign(message: str, secret: str) -> str:
 
 
 async def bybit_private_post(path: str, body: dict):
-    """Helper to send signed POST requests to Bybit V5"""
     body_str = json.dumps(body)
     timestamp = str(int(time.time() * 1000))
     recvWindow = "5000"
@@ -36,15 +36,63 @@ async def bybit_private_post(path: str, body: dict):
         "X-BAPI-RECV-WINDOW": recvWindow
     }
 
-    url = f"{BYBIT_BASE_URL}{path}"
+    url = BYBIT_BASE_URL + path
+
     async with httpx.AsyncClient(timeout=10) as client:
         response = await client.post(url, headers=headers, content=body_str)
 
     return response.json()
 
 
+async def get_position(symbol: str):
+    url = f"{BYBIT_BASE_URL}/v5/position/list"
+    params = {"category": "linear", "symbol": symbol}
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.get(url, params=params)
+
+    data = r.json()
+
+    if data["retCode"] != 0:
+        return None
+
+    pos = data["result"]["list"][0]
+    return pos
+
+
+async def close_existing_position(symbol: str):
+    pos = await get_position(symbol)
+
+    if not pos:
+        print("⚠️ Cannot fetch position")
+        return
+
+    size = float(pos["size"])
+    if size == 0:
+        print(f"✔️ No open position on {symbol}, nothing to close.")
+        return
+
+    side = pos["side"]  # "Buy" or "Sell"
+    close_side = "Sell" if side == "Buy" else "Buy"
+
+    close_body = {
+        "category": "linear",
+        "symbol": symbol,
+        "side": close_side,
+        "orderType": "Market",
+        "qty": str(size),
+        "reduceOnly": True
+    }
+
+    print(f"🔴 Closing previous position: {close_body}")
+    res = await bybit_private_post("/v5/order/create", close_body)
+    print("Close response:", res)
+    await asyncio.sleep(0.5)  # give Bybit time to update
+
+
 @app.post("/tv-webhook")
 async def tv_webhook(request: Request):
+    # 1️⃣ Parse webhook
     try:
         alert = await request.json()
     except Exception:
@@ -52,11 +100,9 @@ async def tv_webhook(request: Request):
 
     print("Incoming alert:", alert)
 
-    # 1️⃣ Validate secret
     if alert.get("secret") != WEBHOOK_SECRET:
         raise HTTPException(status_code=401, detail="Invalid secret")
 
-    # 2️⃣ Extract all parameters
     category = alert.get("category", "linear")
     symbol = alert.get("symbol")
     side = alert.get("side")
@@ -68,7 +114,10 @@ async def tv_webhook(request: Request):
     if not all([symbol, side, qty]):
         raise HTTPException(status_code=400, detail="Missing symbol/side/qty")
 
-    # 3️⃣ Send MARKET ORDER
+    # 2️⃣ CLOSE ANY EXISTING POSITION FIRST
+    await close_existing_position(symbol)
+
+    # 3️⃣ OPEN NEW POSITION
     order_body = {
         "category": category,
         "symbol": symbol,
@@ -78,20 +127,16 @@ async def tv_webhook(request: Request):
         "timeInForce": "GTC"
     }
 
-    print("Sending MARKET order:", order_body)
+    print("🟢 Opening new position:", order_body)
     order_res = await bybit_private_post("/v5/order/create", order_body)
-    print("Order response:", order_res)
+    print("New order response:", order_res)
 
     if order_res.get("retCode") != 0:
-        return {"error": "Failed to create order", "bybit": order_res}
+        return {"error": "Failed to open new order", "bybit": order_res}
 
     order_id = order_res["result"]["orderId"]
-    print("Order ID:", order_id)
 
-    # 4️⃣ Wait briefly to ensure position is open
-    await asyncio.sleep(0.5)
-
-    # 5️⃣ Apply TP/SL to the position (not to the order)
+    # 4️⃣ APPLY TP/SL
     if tp or sl:
         tpsl_body = {
             "category": category,
@@ -99,18 +144,16 @@ async def tv_webhook(request: Request):
             "takeProfit": str(tp) if tp else "",
             "stopLoss": str(sl) if sl else "",
             "tpOrderType": "Market",
-            "slOrderType": "Market",
-            # can enforce position side if needed:
-            # "positionIdx": 1 for long, 2 for short
+            "slOrderType": "Market"
         }
-
-        print("Applying TP/SL:", tpsl_body)
+        print("🎯 Applying TP/SL:", tpsl_body)
         tpsl_res = await bybit_private_post("/v5/position/trading-stop", tpsl_body)
-        print("TP/SL response:", tpsl_res)
+    else:
+        tpsl_res = None
 
     return {
         "status": "ok",
         "orderId": order_id,
         "orderResponse": order_res,
-        "tpSlResponse": tpsl_res if tp or sl else None
+        "tpSlResponse": tpsl_res
     }
