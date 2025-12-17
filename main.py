@@ -8,24 +8,41 @@ import asyncio
 from fastapi import FastAPI, Request, HTTPException
 import httpx
 
+# ==========================================================
+# App
+# ==========================================================
 app = FastAPI()
 
+# ==========================================================
+# ENV VARS (Render / Local)
+# ==========================================================
 BYBIT_API_KEY = os.getenv("BYBIT_API_KEY")
 BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET")
-BYBIT_BASE_URL = os.getenv("BYBIT_BASE_URL")
+BYBIT_BASE_URL = os.getenv("BYBIT_BASE_URL", "https://api.bybit.com")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "MY_SUPER_SECRET")
 
+if not BYBIT_API_KEY or not BYBIT_API_SECRET:
+    raise RuntimeError("Missing BYBIT_API_KEY or BYBIT_API_SECRET")
 
+# ==========================================================
+# Signing
+# ==========================================================
 def bybit_sign(message: str, secret: str) -> str:
-    return hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()
+    return hmac.new(
+        secret.encode("utf-8"),
+        message.encode("utf-8"),
+        hashlib.sha256
+    ).hexdigest()
 
-
+# ==========================================================
+# Bybit PRIVATE POST
+# ==========================================================
 async def bybit_private_post(path: str, body: dict):
-    body_str = json.dumps(body)
+    body_str = json.dumps(body, separators=(",", ":"))
     timestamp = str(int(time.time() * 1000))
-    recvWindow = "5000"
+    recv_window = "5000"
 
-    pre_sign = timestamp + BYBIT_API_KEY + recvWindow + body_str
+    pre_sign = timestamp + BYBIT_API_KEY + recv_window + body_str
     signature = bybit_sign(pre_sign, BYBIT_API_SECRET)
 
     headers = {
@@ -33,46 +50,90 @@ async def bybit_private_post(path: str, body: dict):
         "X-BAPI-API-KEY": BYBIT_API_KEY,
         "X-BAPI-SIGN": signature,
         "X-BAPI-TIMESTAMP": timestamp,
-        "X-BAPI-RECV-WINDOW": recvWindow
+        "X-BAPI-RECV-WINDOW": recv_window,
     }
 
     url = BYBIT_BASE_URL + path
 
     async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.post(url, headers=headers, content=body_str)
+        r = await client.post(url, headers=headers, content=body_str)
 
-    return response.json()
+    try:
+        return r.json()
+    except Exception:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Bybit POST invalid response ({r.status_code}): {r.text}"
+        )
 
+# ==========================================================
+# Bybit PRIVATE GET
+# ==========================================================
+async def bybit_private_get(path: str, params: dict):
+    timestamp = str(int(time.time() * 1000))
+    recv_window = "5000"
 
-async def get_position(symbol: str):
-    url = f"{BYBIT_BASE_URL}/v5/position/list"
-    params = {"category": "linear", "symbol": symbol}
+    query_str = "&".join(f"{k}={v}" for k, v in params.items())
+    pre_sign = timestamp + BYBIT_API_KEY + recv_window + query_str
+    signature = bybit_sign(pre_sign, BYBIT_API_SECRET)
+
+    headers = {
+        "X-BAPI-API-KEY": BYBIT_API_KEY,
+        "X-BAPI-SIGN": signature,
+        "X-BAPI-TIMESTAMP": timestamp,
+        "X-BAPI-RECV-WINDOW": recv_window,
+    }
+
+    url = BYBIT_BASE_URL + path
 
     async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.get(url, params=params)
+        r = await client.get(url, headers=headers, params=params)
 
-    data = r.json()
+    try:
+        return r.json()
+    except Exception:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Bybit GET invalid response ({r.status_code}): {r.text}"
+        )
 
-    if data["retCode"] != 0:
+# ==========================================================
+# Get current position
+# ==========================================================
+async def get_position(symbol: str):
+    params = {
+        "category": "linear",
+        "symbol": symbol
+    }
+
+    data = await bybit_private_get("/v5/position/list", params)
+
+    if data.get("retCode") != 0:
+        print("Bybit position error:", data)
         return None
 
-    pos = data["result"]["list"][0]
-    return pos
+    pos_list = data["result"]["list"]
+    if not pos_list:
+        return None
 
+    return pos_list[0]
 
+# ==========================================================
+# Close existing position (reduceOnly)
+# ==========================================================
 async def close_existing_position(symbol: str):
     pos = await get_position(symbol)
 
     if not pos:
-        print("⚠️ Cannot fetch position")
+        print(f"✔️ No position on {symbol}")
         return
 
-    size = float(pos["size"])
+    size = float(pos.get("size", 0))
     if size == 0:
-        print(f"✔️ No open position on {symbol}, nothing to close.")
+        print(f"✔️ Position size is zero on {symbol}")
         return
 
-    side = pos["side"]  # "Buy" or "Sell"
+    side = pos["side"]  # Buy / Sell
     close_side = "Sell" if side == "Buy" else "Buy"
 
     close_body = {
@@ -84,59 +145,66 @@ async def close_existing_position(symbol: str):
         "reduceOnly": True
     }
 
-    print(f"🔴 Closing previous position: {close_body}")
+    print("🔴 Closing position:", close_body)
     res = await bybit_private_post("/v5/order/create", close_body)
     print("Close response:", res)
-    await asyncio.sleep(0.5)  # give Bybit time to update
 
+    await asyncio.sleep(0.5)
 
+# ==========================================================
+# TradingView Webhook
+# ==========================================================
 @app.post("/tv-webhook")
 async def tv_webhook(request: Request):
-    # 1️⃣ Parse webhook
     try:
         alert = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
-    print("Incoming alert:", alert)
+    print("📩 Incoming alert:", alert)
 
     if alert.get("secret") != WEBHOOK_SECRET:
         raise HTTPException(status_code=401, detail="Invalid secret")
 
-    category = alert.get("category", "linear")
     symbol = alert.get("symbol")
     side = alert.get("side")
     qty = alert.get("qty")
-    orderType = alert.get("orderType", "Market")
+
+    category = alert.get("category", "linear")
+    order_type = alert.get("orderType", "Market")
     tp = alert.get("takeProfit")
     sl = alert.get("stopLoss")
 
     if not all([symbol, side, qty]):
-        raise HTTPException(status_code=400, detail="Missing symbol/side/qty")
+        raise HTTPException(status_code=400, detail="Missing symbol / side / qty")
 
-    # 2️⃣ CLOSE ANY EXISTING POSITION FIRST
+    # 1️⃣ Close existing position
     await close_existing_position(symbol)
 
-    # 3️⃣ OPEN NEW POSITION
+    # 2️⃣ Open new position
     order_body = {
         "category": category,
         "symbol": symbol,
         "side": side,
-        "orderType": orderType,
+        "orderType": order_type,
         "qty": str(qty),
         "timeInForce": "GTC"
     }
 
-    print("🟢 Opening new position:", order_body)
+    print("🟢 Opening position:", order_body)
     order_res = await bybit_private_post("/v5/order/create", order_body)
-    print("New order response:", order_res)
+    print("Order response:", order_res)
 
     if order_res.get("retCode") != 0:
-        return {"error": "Failed to open new order", "bybit": order_res}
+        return {
+            "status": "error",
+            "bybit": order_res
+        }
 
     order_id = order_res["result"]["orderId"]
 
-    # 4️⃣ APPLY TP/SL
+    # 3️⃣ Apply TP / SL
+    tp_sl_res = None
     if tp or sl:
         tpsl_body = {
             "category": category,
@@ -146,14 +214,23 @@ async def tv_webhook(request: Request):
             "tpOrderType": "Market",
             "slOrderType": "Market"
         }
-        print("🎯 Applying TP/SL:", tpsl_body)
-        tpsl_res = await bybit_private_post("/v5/position/trading-stop", tpsl_body)
-    else:
-        tpsl_res = None
+
+        print("🎯 Setting TP/SL:", tpsl_body)
+        tp_sl_res = await bybit_private_post(
+            "/v5/position/trading-stop",
+            tpsl_body
+        )
 
     return {
         "status": "ok",
         "orderId": order_id,
         "orderResponse": order_res,
-        "tpSlResponse": tpsl_res
+        "tpSlResponse": tp_sl_res
     }
+
+# ==========================================================
+# Health check
+# ==========================================================
+@app.get("/")
+async def root():
+    return {"status": "running"}

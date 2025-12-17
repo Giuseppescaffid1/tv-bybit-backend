@@ -1,0 +1,4 @@
+get_price.py
+*.ipynb
+*.pyc
+__pycache__/
