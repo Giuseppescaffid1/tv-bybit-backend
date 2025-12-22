@@ -182,16 +182,20 @@ async def tv_webhook(request: Request):
     await close_existing_position(symbol)
 
     # 2️⃣ Open new position
+    # 3️⃣ Apply TP / SL
     order_body = {
         "category": category,
         "symbol": symbol,
         "side": side,
         "orderType": order_type,
         "qty": str(qty),
+        "takeProfit": str(tp) if tp else "",
+        "stopLoss": str(sl) if sl else "",
         "timeInForce": "GTC"
     }
 
     print("🟢 Opening position:", order_body)
+    print("🎯 Setting TP/SL:", "TakeProfit:", tp, "StopLoss:", sl)
     order_res = await bybit_private_post("/v5/order/create", order_body)
     print("Order response:", order_res)
 
@@ -203,29 +207,11 @@ async def tv_webhook(request: Request):
 
     order_id = order_res["result"]["orderId"]
 
-    # 3️⃣ Apply TP / SL
-    tp_sl_res = None
-    if tp or sl:
-        tpsl_body = {
-            "category": category,
-            "symbol": symbol,
-            "takeProfit": str(tp) if tp else "",
-            "stopLoss": str(sl) if sl else "",
-            "tpOrderType": "Market",
-            "slOrderType": "Market"
-        }
-
-        print("🎯 Setting TP/SL:", tpsl_body)
-        tp_sl_res = await bybit_private_post(
-            "/v5/position/trading-stop",
-            tpsl_body
-        )
 
     return {
         "status": "ok",
         "orderId": order_id,
-        "orderResponse": order_res,
-        "tpSlResponse": tp_sl_res
+        "orderResponse": order_res
     }
 
 # ==========================================================
