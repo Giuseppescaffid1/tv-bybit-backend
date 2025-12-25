@@ -3,8 +3,8 @@ import time
 import hmac
 import hashlib
 import json
-import asyncio
 
+from utilities.utils import TradingUtils
 from fastapi import FastAPI, Request, HTTPException
 import httpx
 
@@ -23,6 +23,15 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "MY_SUPER_SECRET")
 
 if not BYBIT_API_KEY or not BYBIT_API_SECRET:
     raise RuntimeError("Missing BYBIT_API_KEY or BYBIT_API_SECRET")
+
+# ==========================================================
+# Establish constants
+# ==========================================================
+DEFAULT_RISK_PERCENTAGE = 0.01  # 1%
+TradingUtilsInstance = TradingUtils(
+    api_key=BYBIT_API_KEY,
+    api_secret=BYBIT_API_SECRET
+)
 
 # ==========================================================
 # Signing
@@ -97,59 +106,7 @@ async def bybit_private_get(path: str, params: dict):
             detail=f"Bybit GET invalid response ({r.status_code}): {r.text}"
         )
 
-# ==========================================================
-# Get current position
-# ==========================================================
-async def get_position(symbol: str):
-    params = {
-        "category": "linear",
-        "symbol": symbol
-    }
 
-    data = await bybit_private_get("/v5/position/list", params)
-
-    if data.get("retCode") != 0:
-        print("Bybit position error:", data)
-        return None
-
-    pos_list = data["result"]["list"]
-    if not pos_list:
-        return None
-
-    return pos_list[0]
-
-# ==========================================================
-# Close existing position (reduceOnly)
-# ==========================================================
-async def close_existing_position(symbol: str):
-    pos = await get_position(symbol)
-
-    if not pos:
-        print(f"✔️ No position on {symbol}")
-        return
-
-    size = float(pos.get("size", 0))
-    if size == 0:
-        print(f"✔️ Position size is zero on {symbol}")
-        return
-
-    side = pos["side"]  # Buy / Sell
-    close_side = "Sell" if side == "Buy" else "Buy"
-
-    close_body = {
-        "category": "linear",
-        "symbol": symbol,
-        "side": close_side,
-        "orderType": "Market",
-        "qty": str(size),
-        "reduceOnly": True
-    }
-
-    print("🔴 Closing position:", close_body)
-    res = await bybit_private_post("/v5/order/create", close_body)
-    print("Close response:", res)
-
-    await asyncio.sleep(0.5)
 
 # ==========================================================
 # TradingView Webhook
@@ -179,8 +136,6 @@ async def tv_webhook(request: Request):
         raise HTTPException(status_code=400, detail="Missing symbol / side / qty")
 
     # 1️⃣ Close existing position
-    await close_existing_position(symbol)
-
     # 2️⃣ Open new position
     # 3️⃣ Apply TP / SL
     order_body = {
@@ -188,7 +143,7 @@ async def tv_webhook(request: Request):
         "symbol": symbol,
         "side": side,
         "orderType": order_type,
-        "qty": str(qty),
+        "qty": TradingUtilsInstance.compute_qty_risk_based(),
         "takeProfit": str(tp) if tp else "",
         "stopLoss": str(sl) if sl else "",
         "timeInForce": "GTC"
