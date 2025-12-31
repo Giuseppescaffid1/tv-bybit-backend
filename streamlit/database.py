@@ -8,6 +8,20 @@ import os
 from datetime import datetime
 import pandas as pd
 
+# Load environment variables from .env file for local testing
+try:
+    from dotenv import load_dotenv  # type: ignore
+    import os
+    # Try to load .env from project root (parent directory)
+    env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
+    if os.path.exists(env_path):
+        load_dotenv(env_path)
+    else:
+        # Fallback: try current directory
+        load_dotenv()
+except ImportError:
+    pass  # python-dotenv not installed, skip
+
 Base = declarative_base()
 
 class OrderbookTick(Base):

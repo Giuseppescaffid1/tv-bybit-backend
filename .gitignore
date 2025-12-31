@@ -2,3 +2,11 @@ get_price.py
 *.ipynb
 *.pyc
 __pycache__/
+
+# Environment variables (contains sensitive credentials)
+.env
+
+# Local database files
+*.db
+*.sqlite
+*.sqlite3
