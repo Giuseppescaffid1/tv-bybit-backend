@@ -1081,6 +1081,49 @@ def update_dashboard(n, start_balance, fee_rate, tp_pct, sl_pct, use_dynamic, vo
 # Make server accessible for gunicorn
 server = app.server
 
+# Add a simple health check endpoint that shows database status
+@server.route('/health')
+def health_check():
+    """Health check endpoint showing database status"""
+    try:
+        from streamlit.database import get_session, OrderbookTick, get_database_url
+        from datetime import datetime, timedelta
+        
+        session = get_session()
+        try:
+            total_count = session.query(OrderbookTick).count()
+            
+            # Get recent count (last 10 minutes)
+            cutoff = datetime.utcnow() - timedelta(minutes=10)
+            recent_count = session.query(OrderbookTick).filter(
+                OrderbookTick.ts >= cutoff
+            ).count()
+            
+            # Get latest tick
+            latest = session.query(OrderbookTick).order_by(OrderbookTick.ts.desc()).first()
+            latest_time = latest.ts.isoformat() if latest else "None"
+            
+            db_url = get_database_url()
+            has_db = "Yes" if db_url and "sqlite" not in db_url.lower() else "No (using SQLite)"
+            
+            return {
+                "status": "ok",
+                "database_configured": has_db,
+                "total_ticks": total_count,
+                "recent_ticks_10min": recent_count,
+                "latest_tick_time": latest_time,
+                "worker_status": "running" if recent_count > 0 else "no_recent_data"
+            }, 200
+        finally:
+            session.close()
+    except Exception as e:
+        import traceback
+        return {
+            "status": "error",
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }, 500
+
 if __name__ == '__main__':
     # For local development
     app.run(debug=True, host='0.0.0.0', port=8050)

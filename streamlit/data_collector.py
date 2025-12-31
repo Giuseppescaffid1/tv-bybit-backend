@@ -182,31 +182,69 @@ class BybitDataCollector:
 
 def main():
     """Main function to run the data collector"""
-    logger.info("📦 Starting data collector worker...")
-    print("📦 Starting data collector worker...", flush=True, file=sys.stderr)
+    logger.info("=" * 60)
+    logger.info("📦 STARTING DATA COLLECTOR WORKER")
+    logger.info("=" * 60)
+    print("=" * 60, flush=True, file=sys.stderr)
+    print("📦 STARTING DATA COLLECTOR WORKER", flush=True, file=sys.stderr)
+    print("=" * 60, flush=True, file=sys.stderr)
     
-    # Initialize database
+    # Check database connection first
     try:
-        logger.info("🔧 Initializing database...")
-        print("🔧 Initializing database...", flush=True, file=sys.stderr)
+        from streamlit.database import get_database_url, get_engine
+        db_url = get_database_url()
+        logger.info(f"🔗 Database URL: {db_url[:50]}..." if len(db_url) > 50 else f"🔗 Database URL: {db_url}")
+        print(f"🔗 Database URL configured: {'Yes' if db_url else 'No'}", flush=True, file=sys.stderr)
+        
+        # Test database connection
+        logger.info("🔧 Testing database connection...")
+        print("🔧 Testing database connection...", flush=True, file=sys.stderr)
+        engine = get_engine()
+        with engine.connect() as conn:
+            conn.execute("SELECT 1")
+        logger.info("✅ Database connection successful")
+        print("✅ Database connection successful", flush=True, file=sys.stderr)
+    except Exception as e:
+        logger.error(f"❌ Database connection failed: {e}", exc_info=True)
+        print(f"❌ Database connection failed: {e}", flush=True, file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        logger.error("⚠️ Continuing anyway, but data won't be saved...")
+        print("⚠️ Continuing anyway, but data won't be saved...", flush=True, file=sys.stderr)
+    
+    # Initialize database tables
+    try:
+        logger.info("🔧 Initializing database tables...")
+        print("🔧 Initializing database tables...", flush=True, file=sys.stderr)
         init_db()
-        logger.info("✅ Database initialized")
-        print("✅ Database initialized", flush=True, file=sys.stderr)
+        logger.info("✅ Database tables initialized")
+        print("✅ Database tables initialized", flush=True, file=sys.stderr)
     except Exception as e:
         logger.error(f"❌ Database initialization error: {e}", exc_info=True)
         print(f"❌ Database initialization error: {e}", flush=True, file=sys.stderr)
         import traceback
         traceback.print_exc()
-        # Don't return - try to continue anyway
+        logger.error("⚠️ Continuing anyway...")
+        print("⚠️ Continuing anyway...", flush=True, file=sys.stderr)
     
     # Start collector
-    logger.info("🚀 Starting Bybit data collector...")
-    print("🚀 Starting Bybit data collector...", flush=True, file=sys.stderr)
+    logger.info("🚀 Starting Bybit WebSocket data collector...")
+    print("🚀 Starting Bybit WebSocket data collector...", flush=True, file=sys.stderr)
     collector = BybitDataCollector()
     collector.start()
     
     # Give it a moment to connect
-    time.sleep(3)
+    logger.info("⏳ Waiting for WebSocket connection...")
+    print("⏳ Waiting for WebSocket connection...", flush=True, file=sys.stderr)
+    time.sleep(5)
+    
+    # Check if we got any data
+    if collector.tick_count == 0:
+        logger.warning("⚠️ No ticks collected yet - WebSocket may not be connected")
+        print("⚠️ No ticks collected yet - WebSocket may not be connected", flush=True, file=sys.stderr)
+    else:
+        logger.info(f"✅ Successfully collected {collector.tick_count} ticks")
+        print(f"✅ Successfully collected {collector.tick_count} ticks", flush=True, file=sys.stderr)
     
     # Keep the process alive
     try:
@@ -226,12 +264,23 @@ def main():
                     session.close()
                     logger.info(f"📊 Database status: {total_count} total ticks stored")
                     print(f"📊 Database status: {total_count} total ticks stored", flush=True, file=sys.stderr)
+                    
+                    if total_count == 0 and collector.tick_count > 0:
+                        logger.error("⚠️ WARNING: Ticks collected but not saved to database!")
+                        print("⚠️ WARNING: Ticks collected but not saved to database!", flush=True, file=sys.stderr)
                 except Exception as e:
-                    logger.error(f"❌ Error checking database: {e}")
+                    logger.error(f"❌ Error checking database: {e}", exc_info=True)
+                    print(f"❌ Error checking database: {e}", flush=True, file=sys.stderr)
     except KeyboardInterrupt:
         logger.info("🛑 Stopping data collector...")
         print("🛑 Stopping data collector...", flush=True, file=sys.stderr)
         collector.stop()
+    except Exception as e:
+        logger.error(f"❌ Fatal error in main loop: {e}", exc_info=True)
+        print(f"❌ Fatal error in main loop: {e}", flush=True, file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        raise
 
 
 if __name__ == '__main__':

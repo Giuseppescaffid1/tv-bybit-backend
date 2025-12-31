@@ -36,9 +36,13 @@ def get_database_url():
         # Render's DATABASE_URL uses postgres:// but SQLAlchemy needs postgresql://
         if db_url.startswith('postgres://'):
             db_url = db_url.replace('postgres://', 'postgresql://', 1)
+        import sys
+        print(f"✅ Using DATABASE_URL from environment (length: {len(db_url)})", flush=True, file=sys.stderr)
         return db_url
     else:
         # Fallback for local development
+        import sys
+        print("⚠️ No DATABASE_URL found, using SQLite for local development", flush=True, file=sys.stderr)
         return 'sqlite:///orderbook.db'
 
 
@@ -57,9 +61,24 @@ def get_session():
 
 def init_db():
     """Initialize database tables"""
-    engine = get_engine()
-    Base.metadata.create_all(engine)
-    print("✅ Database tables initialized", flush=True)
+    try:
+        import sys
+        print("🔧 Creating database tables...", flush=True, file=sys.stderr)
+        engine = get_engine()
+        Base.metadata.create_all(engine)
+        print("✅ Database tables initialized", flush=True, file=sys.stderr)
+        
+        # Verify tables were created
+        from sqlalchemy import inspect
+        inspector = inspect(engine)
+        tables = inspector.get_table_names()
+        print(f"✅ Database has {len(tables)} table(s): {tables}", flush=True, file=sys.stderr)
+    except Exception as e:
+        import sys
+        import traceback
+        print(f"❌ Error initializing database: {e}", flush=True, file=sys.stderr)
+        traceback.print_exc()
+        raise
 
 
 def save_tick(tick_data):
