@@ -66,21 +66,30 @@ def save_tick(tick_data):
     """Save a single tick to database"""
     session = get_session()
     try:
+        # Ensure ts is datetime
+        if isinstance(tick_data['ts'], str):
+            ts = pd.to_datetime(tick_data['ts']).to_pydatetime()
+        else:
+            ts = tick_data['ts']
+        
         tick = OrderbookTick(
-            ts=pd.to_datetime(tick_data['ts']).to_pydatetime(),
+            ts=ts,
             symbol=tick_data['symbol'],
-            best_bid_price=tick_data['best_bid_price'],
-            best_bid_size=tick_data['best_bid_size'],
-            best_ask_price=tick_data['best_ask_price'],
-            best_ask_size=tick_data['best_ask_size'],
-            mid_price=tick_data.get('mid_price', (tick_data['best_bid_price'] + tick_data['best_ask_price']) / 2),
-            spread=tick_data.get('spread', tick_data['best_ask_price'] - tick_data['best_bid_price'])
+            best_bid_price=float(tick_data['best_bid_price']),
+            best_bid_size=float(tick_data['best_bid_size']),
+            best_ask_price=float(tick_data['best_ask_price']),
+            best_ask_size=float(tick_data['best_ask_size']),
+            mid_price=float(tick_data.get('mid_price', (tick_data['best_bid_price'] + tick_data['best_ask_price']) / 2)),
+            spread=float(tick_data.get('spread', tick_data['best_ask_price'] - tick_data['best_bid_price']))
         )
         session.add(tick)
         session.commit()
     except Exception as e:
         session.rollback()
-        print(f"❌ Error saving tick: {e}", flush=True)
+        import sys
+        import traceback
+        print(f"❌ Error saving tick: {e}", flush=True, file=sys.stderr)
+        traceback.print_exc()
     finally:
         session.close()
 
@@ -99,6 +108,15 @@ def get_latest_ticks(n=2000, symbol='ETHUSDT', minutes_back=10):
         
         ticks = query.all()
         
+        if not ticks:
+            # Try to get any recent data (last hour)
+            cutoff_time = datetime.utcnow() - timedelta(minutes=60)
+            query = session.query(OrderbookTick).filter(
+                OrderbookTick.symbol == symbol,
+                OrderbookTick.ts >= cutoff_time
+            ).order_by(OrderbookTick.ts.desc()).limit(n)
+            ticks = query.all()
+        
         # Convert to list of dicts
         result = []
         for tick in reversed(ticks):  # Reverse to get chronological order
@@ -115,7 +133,10 @@ def get_latest_ticks(n=2000, symbol='ETHUSDT', minutes_back=10):
         
         return result
     except Exception as e:
-        print(f"❌ Error getting ticks: {e}", flush=True)
+        import sys
+        print(f"❌ Error getting ticks: {e}", flush=True, file=sys.stderr)
+        import traceback
+        traceback.print_exc()
         return []
     finally:
         session.close()
@@ -123,11 +144,21 @@ def get_latest_ticks(n=2000, symbol='ETHUSDT', minutes_back=10):
 
 def get_ticks_as_dataframe(n=2000, symbol='ETHUSDT', minutes_back=10):
     """Get latest ticks as pandas DataFrame"""
-    ticks = get_latest_ticks(n=n, symbol=symbol, minutes_back=minutes_back)
-    if not ticks:
+    try:
+        ticks = get_latest_ticks(n=n, symbol=symbol, minutes_back=minutes_back)
+        if not ticks:
+            return pd.DataFrame()
+        
+        df = pd.DataFrame(ticks)
+        if df.empty:
+            return pd.DataFrame()
+        
+        df['ts'] = pd.to_datetime(df['ts'], utc=True)
+        return df
+    except Exception as e:
+        import sys
+        print(f"❌ Error in get_ticks_as_dataframe: {e}", flush=True, file=sys.stderr)
+        import traceback
+        traceback.print_exc()
         return pd.DataFrame()
-    
-    df = pd.DataFrame(ticks)
-    df['ts'] = pd.to_datetime(df['ts'], utc=True)
-    return df
 

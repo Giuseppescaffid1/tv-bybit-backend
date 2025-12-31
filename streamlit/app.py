@@ -194,16 +194,35 @@ except Exception as e:
 def get_live_df(n=2000):
     """Get live data from database (with lag)"""
     try:
-        from streamlit.database import get_ticks_as_dataframe
-        # Get data from database (with 10 minute window by default)
-        df = get_ticks_as_dataframe(n=n, symbol='ETHUSDT', minutes_back=10)
+        from streamlit.database import get_ticks_as_dataframe, get_session, OrderbookTick
+        from datetime import timedelta
         
-        if df.empty:
-            logger.warning("⚠️ No data in database yet")
-            return pd.DataFrame()
-        
-        logger.info(f"📊 Retrieved {len(df)} ticks from database")
-        return df
+        # First check if we have ANY data in the database
+        session = get_session()
+        try:
+            total_count = session.query(OrderbookTick).count()
+            logger.info(f"📊 Total ticks in database: {total_count}")
+            
+            if total_count == 0:
+                logger.warning("⚠️ Database is empty - data collector may not be running")
+                return pd.DataFrame()
+            
+            # Get recent data (last 10 minutes)
+            df = get_ticks_as_dataframe(n=n, symbol='ETHUSDT', minutes_back=10)
+            
+            if df.empty:
+                # Try getting any recent data (last hour)
+                logger.warning("⚠️ No data in last 10 minutes, trying last hour...")
+                df = get_ticks_as_dataframe(n=n, symbol='ETHUSDT', minutes_back=60)
+                
+            if df.empty:
+                logger.warning("⚠️ No recent data in database - check data collector worker")
+                return pd.DataFrame()
+            
+            logger.info(f"✅ Retrieved {len(df)} ticks from database (latest: {df['ts'].max()})")
+            return df
+        finally:
+            session.close()
         
     except Exception as e:
         logger.error(f"❌ Error in get_live_df: {e}", exc_info=True)
@@ -603,6 +622,20 @@ def update_dashboard(n, start_balance, fee_rate, tp_pct, sl_pct, use_dynamic, vo
         try:
             live_df = get_live_df(n=2000)
             if live_df is None or live_df.empty:
+                # Check database status
+                try:
+                    from streamlit.database import get_session, OrderbookTick
+                    session = get_session()
+                    total_count = session.query(OrderbookTick).count()
+                    session.close()
+                    
+                    if total_count == 0:
+                        message = "⏳ Database is empty. Waiting for data collector to start collecting data..."
+                    else:
+                        message = f"⏳ No recent data (last 10 min). Database has {total_count} total ticks. Check data collector worker."
+                except Exception as e:
+                    message = f"⏳ Waiting for live data... (DB error: {str(e)[:50]})"
+                
                 empty_fig = go.Figure()
                 empty_fig.add_annotation(text="No live data available", 
                                         xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
@@ -610,7 +643,7 @@ def update_dashboard(n, start_balance, fee_rate, tp_pct, sl_pct, use_dynamic, vo
                 empty_fig.update_layout(template="plotly_white", height=400)
                 return (empty_fig, empty_fig, html.Div("Waiting..."), 
                         html.Div("Waiting..."), empty_fig, html.Div(""), 
-                        html.Div("⏳ Waiting for live data...", style={'color': 'orange'}))
+                        html.Div(message, style={'color': 'orange'}))
         except Exception as e:
             empty_fig = go.Figure()
             empty_fig.add_annotation(text=f"Error getting live data: {str(e)}", 

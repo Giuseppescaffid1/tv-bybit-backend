@@ -10,7 +10,7 @@ from datetime import datetime
 import websocket
 import json
 from collections import deque
-from database import init_db, save_tick, get_engine
+from streamlit.database import init_db, save_tick, get_engine
 
 # Configure logging
 logging.basicConfig(
@@ -100,15 +100,28 @@ class BybitDataCollector:
             }
             
             # Save to database
-            save_tick(tick)
-            self.tick_count += 1
-            
-            # Log every 100 ticks
-            if self.tick_count % 100 == 0:
-                logger.info(f"📊 Collected {self.tick_count} ticks. Latest price: {tick['mid_price']:.2f}")
+            try:
+                save_tick(tick)
+                self.tick_count += 1
+                
+                # Log every 100 ticks
+                if self.tick_count % 100 == 0:
+                    logger.info(f"📊 Collected {self.tick_count} ticks. Latest price: {tick['mid_price']:.2f}")
+                    print(f"📊 Collected {self.tick_count} ticks. Latest price: {tick['mid_price']:.2f}", flush=True, file=sys.stderr)
+                
+                # Log first few ticks
+                if self.tick_count <= 5:
+                    logger.info(f"✅ Saved tick #{self.tick_count} to database: price={tick['mid_price']:.2f}")
+                    print(f"✅ Saved tick #{self.tick_count} to database: price={tick['mid_price']:.2f}", flush=True, file=sys.stderr)
+            except Exception as e:
+                logger.error(f"❌ Error saving tick to database: {e}", exc_info=True)
+                print(f"❌ Error saving tick to database: {e}", flush=True, file=sys.stderr)
+                import traceback
+                traceback.print_exc()
                 
         except Exception as e:
             logger.error(f"❌ Error processing message: {e}", exc_info=True)
+            print(f"❌ Error processing message: {e}", flush=True, file=sys.stderr)
     
     def _on_error(self, ws, error):
         """Handle WebSocket errors"""
@@ -169,29 +182,55 @@ class BybitDataCollector:
 
 def main():
     """Main function to run the data collector"""
-    logger.info("📦 Initializing database...")
-    print("📦 Initializing database...", flush=True, file=sys.stderr)
+    logger.info("📦 Starting data collector worker...")
+    print("📦 Starting data collector worker...", flush=True, file=sys.stderr)
     
     # Initialize database
     try:
+        logger.info("🔧 Initializing database...")
+        print("🔧 Initializing database...", flush=True, file=sys.stderr)
         init_db()
         logger.info("✅ Database initialized")
+        print("✅ Database initialized", flush=True, file=sys.stderr)
     except Exception as e:
         logger.error(f"❌ Database initialization error: {e}", exc_info=True)
         print(f"❌ Database initialization error: {e}", flush=True, file=sys.stderr)
-        return
+        import traceback
+        traceback.print_exc()
+        # Don't return - try to continue anyway
     
     # Start collector
+    logger.info("🚀 Starting Bybit data collector...")
+    print("🚀 Starting Bybit data collector...", flush=True, file=sys.stderr)
     collector = BybitDataCollector()
     collector.start()
     
+    # Give it a moment to connect
+    time.sleep(3)
+    
     # Keep the process alive
     try:
+        heartbeat_count = 0
         while True:
             time.sleep(60)
-            logger.info(f"💓 Heartbeat - Collected {collector.tick_count} ticks so far")
+            heartbeat_count += 1
+            logger.info(f"💓 Heartbeat #{heartbeat_count} - Collected {collector.tick_count} ticks so far")
+            print(f"💓 Heartbeat #{heartbeat_count} - Collected {collector.tick_count} ticks so far", flush=True, file=sys.stderr)
+            
+            # Log database status every 5 minutes
+            if heartbeat_count % 5 == 0:
+                try:
+                    from streamlit.database import get_session, OrderbookTick
+                    session = get_session()
+                    total_count = session.query(OrderbookTick).count()
+                    session.close()
+                    logger.info(f"📊 Database status: {total_count} total ticks stored")
+                    print(f"📊 Database status: {total_count} total ticks stored", flush=True, file=sys.stderr)
+                except Exception as e:
+                    logger.error(f"❌ Error checking database: {e}")
     except KeyboardInterrupt:
         logger.info("🛑 Stopping data collector...")
+        print("🛑 Stopping data collector...", flush=True, file=sys.stderr)
         collector.stop()
 
 

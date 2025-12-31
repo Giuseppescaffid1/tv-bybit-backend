@@ -4,7 +4,7 @@ services:
     name: bybit-trading-dashboard
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: cd streamlit && python -c "from database import init_db; init_db()" && gunicorn --bind 0.0.0.0:$PORT app:server
+    startCommand: cd streamlit && python -c "from streamlit.database import init_db; init_db()" && gunicorn --bind 0.0.0.0:$PORT app:server
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
