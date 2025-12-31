@@ -3,7 +3,7 @@ from dash import dcc, html, Input, Output, State
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from source import Strategy_A
+from streamlit.source import Strategy_A
 import queue
 import threading
 from datetime import datetime, timedelta
