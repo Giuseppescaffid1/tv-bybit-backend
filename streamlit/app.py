@@ -3,7 +3,18 @@ from dash import dcc, html, Input, Output, State
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from streamlit.source import Strategy_A
+from source import Strategy_A
+import sys
+import logging
+
+# Configure logging for Render - this will show in logs
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    stream=sys.stdout,
+    force=True
+)
+logger = logging.getLogger(__name__)
 import queue
 import threading
 from datetime import datetime, timedelta
@@ -20,8 +31,9 @@ app = dash.Dash(__name__)
 app.title = "ETHUSDT — Enhanced L1 Liquidity Imbalance Strategy"
 
 # ======================
-# BYBIT ORDERBOOK STREAMER CLASS
+# BYBIT ORDERBOOK STREAMER CLASS (DEPRECATED - Now using database)
 # ======================
+# This class is kept for reference but not used - data comes from database via data_collector.py
 class BybitOrderbookStreamer:
     def __init__(self, symbol="ETHUSDT", ws_url="wss://stream.bybit.com/v5/public/linear", ping_interval=20, maxlen=3000):
         self.symbol = symbol
@@ -42,54 +54,119 @@ class BybitOrderbookStreamer:
                 break
 
     def _on_open(self, ws):
-        sub_msg = {"op": "subscribe", "args": [f"orderbook.1.{self.symbol}"]}
-        ws.send(json.dumps(sub_msg))
-        threading.Thread(target=self._send_ping, args=(ws,), daemon=True).start()
+        logger.info(f"✅ WebSocket connection opened for {self.symbol}")
+        print(f"✅ WebSocket connection opened for {self.symbol}", flush=True, file=sys.stderr)
+        try:
+            sub_msg = {"op": "subscribe", "args": [f"orderbook.1.{self.symbol}"]}
+            ws.send(json.dumps(sub_msg))
+            logger.info(f"✅ Subscribed to orderbook.1.{self.symbol}")
+            print(f"✅ Subscribed to orderbook.1.{self.symbol}", flush=True, file=sys.stderr)
+            threading.Thread(target=self._send_ping, args=(ws,), daemon=True).start()
+        except Exception as e:
+            logger.error(f"❌ Error in _on_open: {e}", exc_info=True)
+            print(f"❌ Error in _on_open: {e}", flush=True, file=sys.stderr)
+            import traceback
+            traceback.print_exc()
 
     def _on_message(self, ws, message):
-        msg = json.loads(message)
-        if "topic" not in msg or not msg["topic"].startswith("orderbook"):
-            return
-        data = msg.get("data", {})
-        bids = data.get("b", [])
-        asks = data.get("a", [])
-        if not bids or not asks:
-            return
-        best_bid_price, best_bid_size = bids[0]
-        best_ask_price, best_ask_size = asks[0]
-        ts = datetime.utcnow().isoformat()
-        tick = {
-            "ts": ts,
-            "symbol": self.symbol,
-            "best_bid_price": float(best_bid_price),
-            "best_bid_size": float(best_bid_size),
-            "best_ask_price": float(best_ask_price),
-            "best_ask_size": float(best_ask_size)
-        }
-        self.buffer.append(tick)
-        if not self.data_queue.full():
-            self.data_queue.put(tick)
+        try:
+            msg = json.loads(message)
+            
+            # Handle subscription confirmation
+            if msg.get("op") == "subscribe" and msg.get("success"):
+                logger.info(f"✅ Subscription confirmed: {msg}")
+                return
+            
+            # Handle ping/pong
+            if msg.get("op") == "pong":
+                return
+            
+            if "topic" not in msg or not msg["topic"].startswith("orderbook"):
+                return
+            
+            data = msg.get("data", {})
+            if not data:
+                return
+                
+            bids = data.get("b", [])
+            asks = data.get("a", [])
+            if not bids or not asks:
+                return
+                
+            best_bid_price, best_bid_size = bids[0]
+            best_ask_price, best_ask_size = asks[0]
+            ts = datetime.utcnow().isoformat()
+            tick = {
+                "ts": ts,
+                "symbol": self.symbol,
+                "best_bid_price": float(best_bid_price),
+                "best_bid_size": float(best_bid_size),
+                "best_ask_price": float(best_ask_price),
+                "best_ask_size": float(best_ask_size)
+            }
+            self.buffer.append(tick)
+            if not self.data_queue.full():
+                self.data_queue.put(tick)
+        except Exception as e:
+            logger.error(f"❌ Error processing WebSocket message: {e}", exc_info=True)
 
     def _on_error(self, ws, error):
-        print("WebSocket error:", error)
-        ws.close()
+        logger.error(f"❌ WebSocket error: {error}")
+        print(f"❌ WebSocket error: {error}", flush=True, file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        # Don't close immediately, let it try to reconnect
 
     def _on_close(self, ws, close_status_code, close_msg):
-        print("WebSocket closed:", close_status_code, close_msg)
+        logger.warning(f"⚠️ WebSocket closed: {close_status_code}, {close_msg}")
+        print(f"⚠️ WebSocket closed: {close_status_code}, {close_msg}", flush=True, file=sys.stderr)
+        # Auto-reconnect after a delay
+        if not self._stop:
+            logger.info("🔄 Attempting to reconnect WebSocket in 5 seconds...")
+            print("🔄 Attempting to reconnect WebSocket in 5 seconds...", flush=True, file=sys.stderr)
+            time.sleep(5)
+            if not self._stop:
+                self.start()
 
     def start(self):
         self._stop = False
-        self.ws = websocket.WebSocketApp(
-            self.ws_url,
-            on_open=self._on_open,
-            on_message=self._on_message,
-            on_error=self._on_error,
-            on_close=self._on_close
-        )
-        def run_ws():
-            self.ws.run_forever()
-        self._thread = threading.Thread(target=run_ws, daemon=True)
-        self._thread.start()
+        logger.info(f"🚀 Starting WebSocket connection to {self.ws_url}...")
+        print(f"🚀 Starting WebSocket connection to {self.ws_url}...", flush=True, file=sys.stderr)
+        try:
+            self.ws = websocket.WebSocketApp(
+                self.ws_url,
+                on_open=self._on_open,
+                on_message=self._on_message,
+                on_error=self._on_error,
+                on_close=self._on_close
+            )
+            def run_ws():
+                try:
+                    logger.info("🔄 WebSocket thread started, running forever...")
+                    print("🔄 WebSocket thread started, running forever...", flush=True, file=sys.stderr)
+                    self.ws.run_forever()
+                except Exception as e:
+                    logger.error(f"❌ WebSocket run_forever error: {e}", exc_info=True)
+                    print(f"❌ WebSocket run_forever error: {e}", flush=True, file=sys.stderr)
+                    import traceback
+                    traceback.print_exc()
+                    # Try to reconnect
+                    if not self._stop:
+                        time.sleep(5)
+                        self.start()
+            
+            self._thread = threading.Thread(target=run_ws, daemon=True)
+            self._thread.start()
+            logger.info("✅ WebSocket thread started")
+            print("✅ WebSocket thread started", flush=True, file=sys.stderr)
+        except Exception as e:
+            logger.error(f"❌ Error starting WebSocket: {e}", exc_info=True)
+            print(f"❌ Error starting WebSocket: {e}", flush=True, file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+            # Retry after delay
+            if not self._stop:
+                threading.Timer(5.0, self.start).start()
 
     def stop(self):
         self._stop = True
@@ -99,23 +176,41 @@ class BybitOrderbookStreamer:
     def get_latest_ticks(self, n=100):
         return list(self.buffer)[-n:] if len(self.buffer) > n else list(self.buffer)
 
-# Global streamer instance
-streamer = BybitOrderbookStreamer()
-streamer.start()
+# Initialize database on app startup
+try:
+    from database import init_db
+    logger.info("📦 Initializing database connection...")
+    print("📦 Initializing database connection...", flush=True, file=sys.stderr)
+    init_db()
+    logger.info("✅ Database connection initialized")
+    print("✅ Database connection initialized", flush=True, file=sys.stderr)
+except Exception as e:
+    logger.error(f"❌ Database initialization error: {e}", exc_info=True)
+    print(f"❌ Database initialization error: {e}", flush=True, file=sys.stderr)
 
 # ======================
 # HELPER FUNCTIONS
 # ======================
 def get_live_df(n=2000):
-    ticks = streamer.get_latest_ticks(n=n)
-    if not ticks:
+    """Get live data from database (with lag)"""
+    try:
+        from database import get_ticks_as_dataframe
+        # Get data from database (with 10 minute window by default)
+        df = get_ticks_as_dataframe(n=n, symbol='ETHUSDT', minutes_back=10)
+        
+        if df.empty:
+            logger.warning("⚠️ No data in database yet")
+            return pd.DataFrame()
+        
+        logger.info(f"📊 Retrieved {len(df)} ticks from database")
+        return df
+        
+    except Exception as e:
+        logger.error(f"❌ Error in get_live_df: {e}", exc_info=True)
+        print(f"Error in get_live_df: {e}", flush=True, file=sys.stderr)
+        import traceback
+        traceback.print_exc()
         return pd.DataFrame()
-    df = pd.DataFrame(ticks)
-    df['mid_price'] = (df['best_bid_price'] + df['best_ask_price']) / 2
-    df['spread'] = df['best_ask_price'] - df['best_bid_price']
-    # Convert to datetime and ensure timezone-aware (UTC)
-    df['ts'] = pd.to_datetime(df['ts'], utc=True)
-    return df
 
 def filter_fixed_time_window(df, window_minutes=FIXED_WINDOW_MINUTES):
     """Filter the dataframe to only the last window_minutes of data, with at least a fallback number of rows."""
@@ -848,8 +943,13 @@ def update_dashboard(n, start_balance, fee_rate, tp_pct, sl_pct, use_dynamic, vo
             ], style={'textAlign': 'center', 'padding': '10px', 'backgroundColor': '#f8f9fa', 'borderRadius': '5px'}),
             ]
         
-        # Orderbook table
-        latest_ticks = streamer.get_latest_ticks(n=20)
+        # Orderbook table - get from database
+        try:
+            from database import get_latest_ticks
+            latest_ticks = get_latest_ticks(n=20, symbol='ETHUSDT', minutes_back=10)
+        except Exception as e:
+            logger.error(f"❌ Error getting latest ticks: {e}")
+            latest_ticks = []
         if latest_ticks:
             try:
                 df_live = pd.DataFrame(latest_ticks)

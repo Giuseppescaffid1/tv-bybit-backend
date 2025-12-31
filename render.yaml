@@ -1,11 +1,22 @@
 services:
+  # Web dashboard service
   - type: web
     name: bybit-trading-dashboard
-    env: python
+    runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: cd streamlit && gunicorn --bind 0.0.0.0:$PORT app:server
+    startCommand: cd streamlit && python -c "from database import init_db; init_db()" && gunicorn --bind 0.0.0.0:$PORT app:server
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
     healthCheckPath: /
+  
+  # Background worker to collect data
+  - type: worker
+    name: bybit-data-collector
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: cd streamlit && python data_collector.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
 

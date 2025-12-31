@@ -7,6 +7,10 @@ numpy>=1.24.0
 # WebSocket support
 websocket-client>=1.6.0
 
+# Database
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.0
+
 # Server (for production)
 gunicorn>=21.2.0
 
