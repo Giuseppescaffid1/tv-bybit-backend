@@ -1,5 +1,20 @@
-fastapi
-uvicorn[standard]
-httpx
-python-dotenv
-pybit
+# Core dependencies
+dash>=2.14.0
+plotly>=5.17.0
+pandas>=2.0.0
+numpy>=1.24.0
+
+# WebSocket support
+websocket-client>=1.6.0
+
+# Server (for production)
+gunicorn>=21.2.0
+
+# Optional but recommended
+python-dotenv>=1.0.0
+
+# FastAPI (if needed for other parts)
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+httpx>=0.24.0
+pybit>=5.6.0

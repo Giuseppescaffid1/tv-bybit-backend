@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: bybit-trading-dashboard
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: cd streamlit && gunicorn --bind 0.0.0.0:$PORT app:server
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+    healthCheckPath: /
+
