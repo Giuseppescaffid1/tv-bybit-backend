@@ -178,7 +178,7 @@ class BybitOrderbookStreamer:
 
 # Initialize database on app startup
 try:
-    from database import init_db
+    from streamlit.database import init_db
     logger.info("📦 Initializing database connection...")
     print("📦 Initializing database connection...", flush=True, file=sys.stderr)
     init_db()
@@ -194,7 +194,7 @@ except Exception as e:
 def get_live_df(n=2000):
     """Get live data from database (with lag)"""
     try:
-        from database import get_ticks_as_dataframe
+        from streamlit.database import get_ticks_as_dataframe
         # Get data from database (with 10 minute window by default)
         df = get_ticks_as_dataframe(n=n, symbol='ETHUSDT', minutes_back=10)
         
@@ -945,7 +945,7 @@ def update_dashboard(n, start_balance, fee_rate, tp_pct, sl_pct, use_dynamic, vo
         
         # Orderbook table - get from database
         try:
-            from database import get_latest_ticks
+            from streamlit.database import get_latest_ticks
             latest_ticks = get_latest_ticks(n=20, symbol='ETHUSDT', minutes_back=10)
         except Exception as e:
             logger.error(f"❌ Error getting latest ticks: {e}")
