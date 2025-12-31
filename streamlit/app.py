@@ -1085,9 +1085,13 @@ server = app.server
 @server.route('/health')
 def health_check():
     """Health check endpoint showing database status"""
+    import json
     try:
         from streamlit.database import get_session, OrderbookTick, get_database_url
         from datetime import datetime, timedelta
+        
+        db_url = get_database_url()
+        has_db = "Yes" if db_url and "sqlite" not in db_url.lower() else "No (using SQLite)"
         
         session = get_session()
         try:
@@ -1103,26 +1107,45 @@ def health_check():
             latest = session.query(OrderbookTick).order_by(OrderbookTick.ts.desc()).first()
             latest_time = latest.ts.isoformat() if latest else "None"
             
-            db_url = get_database_url()
-            has_db = "Yes" if db_url and "sqlite" not in db_url.lower() else "No (using SQLite)"
+            # Determine worker status
+            if recent_count > 0:
+                worker_status = "✅ Running (collecting data)"
+            elif total_count > 0:
+                worker_status = "⚠️ Not collecting (has old data)"
+            else:
+                worker_status = "❌ Not running (no data)"
             
-            return {
+            # Format response
+            response = {
                 "status": "ok",
                 "database_configured": has_db,
+                "database_url_length": len(db_url) if db_url else 0,
                 "total_ticks": total_count,
                 "recent_ticks_10min": recent_count,
                 "latest_tick_time": latest_time,
-                "worker_status": "running" if recent_count > 0 else "no_recent_data"
-            }, 200
+                "worker_status": worker_status,
+                "diagnosis": []
+            }
+            
+            # Add diagnosis
+            if total_count == 0:
+                response["diagnosis"].append("Database is completely empty - worker may not be running")
+            elif recent_count == 0:
+                response["diagnosis"].append(f"Worker stopped collecting - last data was {latest_time}")
+            else:
+                response["diagnosis"].append("✅ Everything looks good!")
+            
+            return json.dumps(response, indent=2), 200, {'Content-Type': 'application/json'}
         finally:
             session.close()
     except Exception as e:
         import traceback
-        return {
+        response = {
             "status": "error",
             "error": str(e),
             "traceback": traceback.format_exc()
-        }, 500
+        }
+        return json.dumps(response, indent=2), 500, {'Content-Type': 'application/json'}
 
 if __name__ == '__main__':
     # For local development
